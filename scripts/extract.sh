@@ -62,6 +62,22 @@ extract_archive() {
     local file="$1"
     local dest="$2"
     
+    # Sniff real format from content: URLs with query strings (e.g. GitHub release
+    # assets) often hide the true extension, so the file may be named *.img but be xz/zip/7z/gz.
+    local sniff
+    sniff=$(file -b "$file")
+    local newfile=""
+    if echo "$sniff" | grep -qi "XZ compressed"; then newfile="${file%.*}.xz"
+    elif echo "$sniff" | grep -qi "7-zip archive"; then newfile="${file%.*}.7z"
+    elif echo "$sniff" | grep -qi "Zip archive"; then newfile="${file%.*}.zip"
+    elif echo "$sniff" | grep -qi "gzip compressed"; then newfile="${file%.*}.tar.gz"
+    fi
+    if [ -n "$newfile" ] && [ "$newfile" != "$file" ]; then
+        log_warn "Content is actually '${sniff%%,*}' but file is named $(basename "$file"); renaming to $(basename "$newfile")"
+        mv "$file" "$newfile"
+        file="$newfile"
+    fi
+
     log_info "Extracting $file to $dest..."
     
     if [[ "$file" =~ \.xz$ ]]; then
@@ -74,6 +90,7 @@ extract_archive() {
             local out_name
             out_name=$(basename "$file" .xz)
             # If it's a .img.xz, out_name will be .img
+            case "$out_name" in *.img) ;; *) out_name="${out_name}.img";; esac
             xz -d -c "$file" > "$dest/$out_name"
         fi
     elif [[ "$file" =~ \.7z$ ]]; then

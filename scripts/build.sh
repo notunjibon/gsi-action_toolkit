@@ -213,8 +213,17 @@ detect_fs_type() {
 
 ORIGINAL_FS=$(detect_fs_type "$INPUT_IMAGE")
 if [ -z "$ORIGINAL_FS" ]; then
-    log_error "Could not detect filesystem of GSI image $INPUT_IMAGE (must be ext4 or erofs)."
-    exit 1
+    # Fallback: check superblock magic bytes (ext4 @1080 = 53 ef, erofs @1024 = e2 e1 f5 e0)
+    MAGIC_EXT=$(dd if="$INPUT_IMAGE" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d " \n")
+    MAGIC_EROFS=$(dd if="$INPUT_IMAGE" bs=1 skip=1024 count=4 2>/dev/null | od -An -tx1 | tr -d " \n")
+    if [ "$MAGIC_EROFS" = "e2e1f5e0" ]; then
+        ORIGINAL_FS="erofs"
+    elif [ "$MAGIC_EXT" = "53ef" ]; then
+        ORIGINAL_FS="ext4"
+    else
+        echo "[WARN] Could not detect filesystem of $INPUT_IMAGE; assuming ext4."
+        ORIGINAL_FS="ext4"
+    fi
 fi
 FS_UPPER=$(echo "$ORIGINAL_FS" | tr '[:lower:]' '[:upper:]')
 log_step_success "$FS_UPPER detected"
@@ -222,7 +231,9 @@ log_step_success "$FS_UPPER detected"
 # 3. Mount GSI partition and copy contents
 log_header "Mount GSI partition"
 MNT_SRC=$(mktemp -d -p "$PWD" mnt_src.XXXXXX)
-if ! mount -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >/dev/null 2>&1; then
+if ! mount -t "$ORIGINAL_FS" -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >/dev/null 2>&1 \
+   && ! mount -t ext4 -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >/dev/null 2>&1 \
+   && ! mount -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >/dev/null 2>&1; then
     log_error "Failed to mount GSI image read-only."
     rm -rf "$MNT_SRC"
     exit 1

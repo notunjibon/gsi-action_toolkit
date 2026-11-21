@@ -231,16 +231,44 @@ log_step_success "$FS_UPPER detected"
 # 3. Mount GSI partition and copy contents
 log_header "Mount GSI partition"
 MNT_SRC=$(mktemp -d -p "$PWD" mnt_src.XXXXXX)
-if ! mount -t "$ORIGINAL_FS" -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >/dev/null 2>&1 \
-   && ! mount -t ext4 -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >/dev/null 2>&1 \
-   && ! mount -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >/dev/null 2>&1; then
-    log_error "Failed to mount GSI image read-only."
-    rm -rf "$MNT_SRC"
-    exit 1
+MOUNT_LOG=$(mktemp)
+MOUNTED=false
+for opts in "-t $ORIGINAL_FS" "-t ext4" "-t erofs" ""; do
+    if mount $opts -o loop,ro "$INPUT_IMAGE" "$MNT_SRC" >>"$MOUNT_LOG" 2>&1; then
+        MOUNTED=true
+        break
+    fi
+    echo "--- mount $opts failed ---" >>"$MOUNT_LOG"
+done
+
+if [ "$MOUNTED" = "true" ]; then
+    cp -a "$MNT_SRC/." "$SYS_DIR/"
+    umount "$MNT_SRC"
+else
+    echo "[WARN] Kernel mount failed. Diagnostics:"
+    cat "$MOUNT_LOG"
+    file "$INPUT_IMAGE" || true
+    ls -l "$INPUT_IMAGE" || true
+    echo "First bytes @1024:"; dd if="$INPUT_IMAGE" bs=1 skip=1024 count=64 2>/dev/null | od -An -tx1 || true
+    dmesg 2>/dev/null | tail -n 15 || true
+    echo "[WARN] Falling back to userspace extraction (SELinux xattrs may be lost)..."
+    EXTRACTED=false
+    if command -v debugfs >/dev/null 2>&1 && debugfs -R "stats" "$INPUT_IMAGE" >/dev/null 2>&1; then
+        debugfs -R "rdump / $SYS_DIR" "$INPUT_IMAGE" >/dev/null 2>&1 && EXTRACTED=true
+    fi
+    if [ "$EXTRACTED" != "true" ] && command -v fsck.erofs >/dev/null 2>&1; then
+        fsck.erofs --extract="$SYS_DIR" --force "$INPUT_IMAGE" >/dev/null 2>&1 && EXTRACTED=true
+    fi
+    if [ "$EXTRACTED" != "true" ] && command -v 7z >/dev/null 2>&1; then
+        7z x -y -o"$SYS_DIR" "$INPUT_IMAGE" >/dev/null 2>&1 && EXTRACTED=true
+    fi
+    if [ "$EXTRACTED" != "true" ] || [ -z "$(ls -A "$SYS_DIR" 2>/dev/null)" ]; then
+        log_error "Failed to mount or extract GSI image."
+        rm -rf "$MNT_SRC" "$MOUNT_LOG"
+        exit 1
+    fi
 fi
-cp -a "$MNT_SRC/." "$SYS_DIR/"
-umount "$MNT_SRC"
-rm -rf "$MNT_SRC"
+rm -rf "$MNT_SRC" "$MOUNT_LOG"
 log_step_success "Mount and copy complete"
 
 # 4. Remove selected VNDKs

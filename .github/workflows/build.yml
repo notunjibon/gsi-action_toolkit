@@ -83,6 +83,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -153,18 +155,24 @@ jobs:
           echo "artifact_name=$(basename "$ARTIFACT_PATH")" >> $GITHUB_OUTPUT
           echo "checksum_name=$(basename "$CHECKSUM_PATH")" >> $GITHUB_OUTPUT
 
-      - name: Upload GSI image
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.artifact_finder.outputs.artifact_name }}
-          path: ${{ steps.artifact_finder.outputs.artifact_path }}
-          compression-level: 0
-          if-no-files-found: error
-
-      - name: Upload checksum
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.artifact_finder.outputs.checksum_name }}
-          path: ${{ steps.artifact_finder.outputs.checksum_path }}
-          compression-level: 0
-          if-no-files-found: error
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_PATH: ${{ steps.artifact_finder.outputs.artifact_path }}
+          CHECKSUM_PATH: ${{ steps.artifact_finder.outputs.checksum_path }}
+          ARTIFACT_NAME: ${{ steps.artifact_finder.outputs.artifact_name }}
+        run: |
+          TAG="gsi-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$TAG" "$ARTIFACT_PATH" "$CHECKSUM_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$ARTIFACT_NAME" \
+            --notes "Slimmed GSI built by workflow run #${GITHUB_RUN_NUMBER}. Verify with the attached .sha256 file."
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ARTIFACT_NAME}"
+          echo "Download link: $URL"
+          {
+            echo "### GSI build ready"
+            echo ""
+            echo "[Download ${ARTIFACT_NAME}](${URL})"
+            echo ""
+            echo "Release page: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"
